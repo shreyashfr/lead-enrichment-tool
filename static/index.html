@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lead Enrichment Tool</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3344;
+    --text: #e4e6ef;
+    --text2: #8b8fa3;
+    --accent: #6366f1;
+    --accent-hover: #818cf8;
+    --green: #34d399;
+    --red: #f87171;
+    --orange: #fbbf24;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+  .container { max-width: 960px; margin: 0 auto; padding: 24px 20px; }
+  h1 { font-size: 24px; font-weight: 600; margin-bottom: 4px; }
+  .subtitle { color: var(--text2); font-size: 14px; margin-bottom: 32px; }
+
+  /* Cards */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 20px;
+  }
+  .card h2 {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .card h2 .badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 500;
+  }
+  .badge-ok { background: rgba(52,211,153,0.15); color: var(--green); }
+  .badge-err { background: rgba(248,113,113,0.15); color: var(--red); }
+
+  /* Form elements */
+  label { display: block; font-size: 13px; font-weight: 500; color: var(--text2); margin-bottom: 6px; }
+  input[type="text"], input[type="password"], input[type="number"], select {
+    width: 100%;
+    padding: 10px 12px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  input:focus, select:focus { border-color: var(--accent); }
+  .form-row { margin-bottom: 14px; }
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .form-hint { font-size: 12px; color: var(--text2); margin-top: 4px; }
+
+  /* Buttons */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    border: none;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-secondary { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+  .btn-secondary:hover { background: var(--border); }
+  .btn-sm { padding: 6px 14px; font-size: 13px; }
+
+  /* File upload */
+  .upload-zone {
+    border: 2px dashed var(--border);
+    border-radius: 10px;
+    padding: 40px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .upload-zone:hover, .upload-zone.dragover {
+    border-color: var(--accent);
+    background: rgba(99,102,241,0.05);
+  }
+  .upload-zone p { color: var(--text2); font-size: 14px; }
+  .upload-zone .filename { color: var(--green); font-weight: 500; margin-top: 8px; }
+  .upload-zone input { display: none; }
+
+  /* Progress */
+  .progress-bar-container {
+    width: 100%;
+    height: 8px;
+    background: var(--surface2);
+    border-radius: 4px;
+    overflow: hidden;
+    margin: 12px 0;
+  }
+  .progress-bar {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 4px;
+    transition: width 0.3s ease;
+    width: 0%;
+  }
+  .progress-text { font-size: 13px; color: var(--text2); }
+  .progress-current { font-size: 13px; color: var(--text); margin-top: 4px; }
+
+  /* Results table */
+  .table-wrap { overflow-x: auto; margin-top: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    text-align: left;
+    padding: 10px 12px;
+    background: var(--surface2);
+    color: var(--text2);
+    font-weight: 500;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  tr:hover td { background: rgba(99,102,241,0.04); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* Errors list */
+  .error-list { margin-top: 12px; }
+  .error-item {
+    font-size: 13px;
+    color: var(--orange);
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* Seniority chips */
+  .chip-group { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 13px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--text2);
+    cursor: pointer;
+    transition: all 0.15s;
+    user-select: none;
+  }
+  .chip.active { border-color: var(--accent); background: rgba(99,102,241,0.15); color: var(--accent-hover); }
+
+  /* Sections */
+  .section-hidden { display: none; }
+  .actions { display: flex; gap: 10px; margin-top: 16px; align-items: center; }
+  .spacer { flex: 1; }
+
+  /* Collapsible */
+  .collapse-toggle {
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .collapse-toggle::before {
+    content: ">";
+    font-family: monospace;
+    font-size: 12px;
+    transition: transform 0.2s;
+    display: inline-block;
+  }
+  .collapse-toggle.open::before { transform: rotate(90deg); }
+
+  .stats { display: flex; gap: 24px; margin-bottom: 16px; }
+  .stat-item { text-align: center; }
+  .stat-value { font-size: 28px; font-weight: 700; color: var(--accent); }
+  .stat-label { font-size: 12px; color: var(--text2); margin-top: 2px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Lead Enrichment Tool</h1>
+  <p class="subtitle">Upload a CSV with company websites. Get back LinkedIn decision makers.</p>
+
+  <!-- Auth Card -->
+  <div class="card" id="authCard">
+    <h2>LinkedIn Authentication <span id="authBadge" class="badge" style="display:none"></span></h2>
+    <div class="form-row">
+      <label for="liAt">li_at cookie (required)</label>
+      <input type="password" id="liAt" placeholder="Paste your li_at cookie value">
+      <p class="form-hint">From your LinkedIn session. Open DevTools > Application > Cookies > linkedin.com</p>
+    </div>
+    <div class="form-row">
+      <label for="liA">li_a cookie (optional, for Sales Navigator)</label>
+      <input type="password" id="liA" placeholder="Paste your li_a cookie value">
+    </div>
+    <div class="actions">
+      <button class="btn btn-secondary btn-sm" onclick="testAuth()">Test Connection</button>
+      <button class="btn btn-secondary btn-sm" onclick="togglePasswordVisibility()">Show/Hide</button>
+    </div>
+  </div>
+
+  <!-- Upload Card -->
+  <div class="card" id="uploadCard">
+    <h2>Upload CSV</h2>
+    <div class="upload-zone" id="uploadZone" onclick="document.getElementById('csvFile').click()">
+      <p>Drop your CSV file here, or click to browse</p>
+      <div class="filename" id="fileName" style="display:none"></div>
+      <input type="file" id="csvFile" accept=".csv">
+    </div>
+    <div id="columnConfig" class="section-hidden" style="margin-top:16px">
+      <div class="form-grid">
+        <div class="form-row">
+          <label for="websiteCol">Website column</label>
+          <select id="websiteCol"></select>
+        </div>
+        <div class="form-row">
+          <label for="leadsPerCompany">Leads per company</label>
+          <input type="number" id="leadsPerCompany" value="25" min="1" max="100">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Filters Card -->
+  <div class="card" id="filtersCard">
+    <h2>Filters</h2>
+    <div class="form-row">
+      <label>Seniority Level</label>
+      <div class="chip-group" id="seniorityChips">
+        <div class="chip active" data-value="CXO">CXO</div>
+        <div class="chip active" data-value="VP">VP</div>
+        <div class="chip active" data-value="DIRECTOR">Director</div>
+        <div class="chip" data-value="MANAGER">Manager</div>
+        <div class="chip" data-value="SENIOR">Senior</div>
+        <div class="chip" data-value="ENTRY">Entry</div>
+      </div>
+    </div>
+    <div class="form-grid" style="margin-top:14px">
+      <div class="form-row">
+        <label for="titleKeywords">Title keywords (optional)</label>
+        <input type="text" id="titleKeywords" placeholder='e.g. "CEO" or "Head of Marketing"'>
+      </div>
+      <div class="form-row">
+        <label for="functionIds">Function IDs (optional)</label>
+        <input type="text" id="functionIds" placeholder="Comma-separated, e.g. 4,7">
+        <p class="form-hint">1=Accounting, 2=Admin, 3=Arts, 4=BD, 5=Community, 6=Consulting, 7=Education, 8=Engineering, 9=Entrepreneurship, 10=Finance, 11=Healthcare, 12=HR, 13=IT, 14=Legal, 15=Marketing, 16=Media, 17=Military, 18=Operations, 19=Product, 20=Purchasing, 21=QA, 22=Real Estate, 23=Research, 24=Sales, 25=Support</p>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn btn-primary" id="startBtn" onclick="startEnrichment()">Start Enrichment</button>
+    </div>
+  </div>
+
+  <!-- Progress Card -->
+  <div class="card section-hidden" id="progressCard">
+    <h2>Progress</h2>
+    <div class="stats">
+      <div class="stat-item">
+        <div class="stat-value" id="statProcessed">0</div>
+        <div class="stat-label">Processed</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value" id="statLeads">0</div>
+        <div class="stat-label">Leads Found</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value" id="statErrors">0</div>
+        <div class="stat-label">Errors</div>
+      </div>
+    </div>
+    <div class="progress-bar-container">
+      <div class="progress-bar" id="progressBar"></div>
+    </div>
+    <div class="progress-text" id="progressText">Starting...</div>
+    <div class="progress-current" id="progressCurrent"></div>
+  </div>
+
+  <!-- Results Card -->
+  <div class="card section-hidden" id="resultsCard">
+    <h2>Results</h2>
+    <div class="actions" style="margin-top:0;margin-bottom:12px">
+      <button class="btn btn-primary btn-sm" id="downloadBtn" onclick="downloadResults()">Download CSV</button>
+      <span class="spacer"></span>
+      <span class="progress-text" id="resultsSummary"></span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Title</th>
+            <th>Company</th>
+            <th>Profile</th>
+            <th>Website</th>
+          </tr>
+        </thead>
+        <tbody id="resultsBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Errors Card -->
+  <div class="card section-hidden" id="errorsCard">
+    <h2 class="collapse-toggle open" onclick="toggleErrors()">Warnings & Errors</h2>
+    <div class="error-list" id="errorList"></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// --- LocalStorage persistence ---
+function loadSettings() {
+  const liAt = localStorage.getItem('li_at');
+  const liA = localStorage.getItem('li_a');
+  if (liAt) $('liAt').value = liAt;
+  if (liA) $('liA').value = liA;
+}
+
+function saveSettings() {
+  localStorage.setItem('li_at', $('liAt').value.trim());
+  localStorage.setItem('li_a', $('liA').value.trim());
+}
+
+// --- Auth Test ---
+async function testAuth() {
+  const liAt = $('liAt').value.trim();
+  if (!liAt) { alert('Enter li_at first'); return; }
+  saveSettings();
+
+  const badge = $('authBadge');
+  badge.style.display = 'inline';
+  badge.className = 'badge';
+  badge.textContent = 'Testing...';
+
+  try {
+    const resp = await fetch('/api/test-auth', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ li_at: liAt }),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      badge.className = 'badge badge-ok';
+      badge.textContent = 'Connected: ' + data.name;
+    } else {
+      badge.className = 'badge badge-err';
+      badge.textContent = 'Failed: ' + (data.error || 'Unknown error');
+    }
+  } catch (e) {
+    badge.className = 'badge badge-err';
+    badge.textContent = 'Error: ' + e.message;
+  }
+}
+
+function togglePasswordVisibility() {
+  const fields = ['liAt', 'liA'];
+  fields.forEach(id => {
+    const el = $(id);
+    el.type = el.type === 'password' ? 'text' : 'password';
+  });
+}
+
+// --- CSV Upload ---
+let csvFile = null;
+
+$('csvFile').addEventListener('change', e => {
+  if (e.target.files.length) handleFile(e.target.files[0]);
+});
+
+const zone = $('uploadZone');
+zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+zone.addEventListener('drop', e => {
+  e.preventDefault();
+  zone.classList.remove('dragover');
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+
+function handleFile(file) {
+  csvFile = file;
+  $('fileName').textContent = file.name + ' (' + (file.size / 1024).toFixed(1) + ' KB)';
+  $('fileName').style.display = 'block';
+
+  // Parse headers to populate column selector
+  const reader = new FileReader();
+  reader.onload = e => {
+    const firstLine = e.target.result.split('\n')[0];
+    const headers = firstLine.split(',').map(h => h.trim().replace(/^["']|["']$/g, ''));
+    const sel = $('websiteCol');
+    sel.innerHTML = '';
+    headers.forEach(h => {
+      const opt = document.createElement('option');
+      opt.value = h;
+      opt.textContent = h;
+      // Auto-select likely website column
+      if (/website|domain|url|site/i.test(h)) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    $('columnConfig').classList.remove('section-hidden');
+  };
+  reader.readAsText(file.slice(0, 4096));
+}
+
+// --- Seniority Chips ---
+document.querySelectorAll('#seniorityChips .chip').forEach(chip => {
+  chip.addEventListener('click', () => chip.classList.toggle('active'));
+});
+
+function getSelectedSeniority() {
+  return Array.from(document.querySelectorAll('#seniorityChips .chip.active'))
+    .map(c => c.dataset.value);
+}
+
+// --- Enrichment ---
+let currentJobId = null;
+let pollTimer = null;
+
+async function startEnrichment() {
+  const liAt = $('liAt').value.trim();
+  if (!liAt) { alert('Enter your li_at cookie first'); return; }
+  if (!csvFile) { alert('Upload a CSV file first'); return; }
+  saveSettings();
+
+  const formData = new FormData();
+  formData.append('file', csvFile);
+  formData.append('li_at', liAt);
+  formData.append('li_a', $('liA').value.trim());
+  formData.append('website_column', $('websiteCol').value);
+  formData.append('seniority', getSelectedSeniority().join(','));
+  formData.append('title_keywords', $('titleKeywords').value.trim());
+  formData.append('functions', $('functionIds').value.trim());
+  formData.append('leads_per_company', $('leadsPerCompany').value);
+
+  $('startBtn').disabled = true;
+  $('startBtn').textContent = 'Running...';
+  $('progressCard').classList.remove('section-hidden');
+  $('resultsCard').classList.add('section-hidden');
+  $('errorsCard').classList.add('section-hidden');
+
+  try {
+    const resp = await fetch('/api/enrich', { method: 'POST', body: formData });
+    if (!resp.ok) {
+      const err = await resp.json();
+      alert('Error: ' + (err.detail || JSON.stringify(err)));
+      $('startBtn').disabled = false;
+      $('startBtn').textContent = 'Start Enrichment';
+      return;
+    }
+    const data = await resp.json();
+    currentJobId = data.jobId;
+    $('progressText').textContent = `Processing 0 / ${data.total} websites...`;
+    pollProgress();
+  } catch (e) {
+    alert('Failed to start: ' + e.message);
+    $('startBtn').disabled = false;
+    $('startBtn').textContent = 'Start Enrichment';
+  }
+}
+
+async function pollProgress() {
+  if (!currentJobId) return;
+
+  try {
+    const resp = await fetch(`/api/job/${currentJobId}`);
+    const data = await resp.json();
+
+    const pct = data.total > 0 ? Math.round((data.processed / data.total) * 100) : 0;
+    $('progressBar').style.width = pct + '%';
+    $('progressText').textContent = `Processing ${data.processed} / ${data.total} websites... (${pct}%)`;
+    $('progressCurrent').textContent = data.current ? 'Current: ' + data.current : '';
+
+    $('statProcessed').textContent = data.processed;
+    $('statLeads').textContent = data.leadCount;
+    $('statErrors').textContent = data.errors.length;
+
+    if (data.errors.length > 0) {
+      $('errorsCard').classList.remove('section-hidden');
+      $('errorList').innerHTML = data.errors.map(e => `<div class="error-item">${escHtml(e)}</div>`).join('');
+    }
+
+    if (data.status === 'done') {
+      $('progressBar').style.width = '100%';
+      $('progressText').textContent = `Done! ${data.processed} websites processed.`;
+      $('progressCurrent').textContent = '';
+      $('startBtn').disabled = false;
+      $('startBtn').textContent = 'Start Enrichment';
+      loadPreview();
+      return;
+    }
+  } catch (e) {
+    console.error('Poll error:', e);
+  }
+
+  pollTimer = setTimeout(pollProgress, 2000);
+}
+
+async function loadPreview() {
+  if (!currentJobId) return;
+  try {
+    const resp = await fetch(`/api/job/${currentJobId}/preview`);
+    const data = await resp.json();
+
+    $('resultsCard').classList.remove('section-hidden');
+    $('resultsSummary').textContent = `Showing ${Math.min(50, data.leads.length)} of ${data.totalLeads} leads`;
+
+    const tbody = $('resultsBody');
+    tbody.innerHTML = data.leads.slice(0, 50).map(l => `
+      <tr>
+        <td title="${escAttr(l.name)}">${escHtml(l.name)}</td>
+        <td title="${escAttr(l.designation)}">${escHtml(l.designation)}</td>
+        <td title="${escAttr(l.companyName)}">${escHtml(l.companyName)}</td>
+        <td>${l.profileUrl ? `<a href="${escAttr(l.profileUrl)}" target="_blank">View</a>` : '-'}</td>
+        <td title="${escAttr(l.website)}">${escHtml(l.website)}</td>
+      </tr>
+    `).join('');
+  } catch (e) {
+    console.error('Preview error:', e);
+  }
+}
+
+function downloadResults() {
+  if (!currentJobId) return;
+  window.open(`/api/job/${currentJobId}/download`, '_blank');
+}
+
+function toggleErrors() {
+  const toggle = document.querySelector('#errorsCard .collapse-toggle');
+  toggle.classList.toggle('open');
+  $('errorList').style.display = toggle.classList.contains('open') ? 'block' : 'none';
+}
+
+// --- Util ---
+function escHtml(s) {
+  if (!s) return '';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function escAttr(s) {
+  return escHtml(s);
+}
+
+// Init
+loadSettings();
+</script>
+</body>
+</html>
