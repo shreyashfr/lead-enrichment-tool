@@ -352,23 +352,39 @@ async def _voyager_typeahead_search(
     return None
 
 
-def _extract_company_id(urn: str) -> str:
-    """Extract numeric company ID from a URN string."""
-    # Handle formats like: urn:li:fsd_company:12345, urn:li:company:12345, fsd_company:12345
+# Seniority name -> Sales Nav numeric ID mapping
+SENIORITY_MAP = {
+    "CXO": "7",
+    "VP": "8",
+    "DIRECTOR": "9",
+    "MANAGER": "10",
+    "SENIOR": "4",
+    "ENTRY": "3",
+}
+
+
+def _normalize_urn(urn: str) -> str:
+    """Normalize company URN to urn:li:organization:ID format."""
+    if not urn:
+        return ""
+    # Extract the numeric ID from any URN format
     parts = urn.split(":")
     for i, part in enumerate(parts):
-        if part in ("fsd_company", "company", "fs_salesCompany") and i + 1 < len(parts):
-            return parts[i + 1]
-    # Fallback: return last numeric segment
+        if part in ("fsd_company", "company", "organization", "fs_salesCompany",
+                     "fs_normalized_company") and i + 1 < len(parts):
+            num_id = parts[i + 1]
+            return f"urn:li:organization:{num_id}"
+    # Fallback: extract last numeric segment
     for part in reversed(parts):
         if part.isdigit():
-            return part
+            return f"urn:li:organization:{part}"
     return urn
 
 
 async def search_leads_sales_nav(
     client: httpx.AsyncClient,
     company_urn: str,
+    company_name: str,
     li_at: str,
     li_a: Optional[str] = None,
     seniority_levels: Optional[list[str]] = None,
@@ -380,212 +396,221 @@ async def search_leads_sales_nav(
     Search Sales Navigator for leads at a specific company.
     Returns list of lead dicts.
     """
-    company_id = _extract_company_id(company_urn)
     cookies = _build_cookies(li_at, li_a)
-    headers = {**_build_headers(), "accept": "application/json"}
+    headers = {
+        **_build_headers(),
+        "accept": "application/vnd.linkedin.normalized+json+2.1",
+        "referer": "https://www.linkedin.com/sales/search/people",
+    }
 
-    # Try Sales Nav search first, fall back to Voyager people search
-    leads = await _sales_nav_lead_search(
-        client, company_id, cookies, headers,
-        seniority_levels=seniority_levels,
-        title_keywords=title_keywords,
-        function_ids=function_ids,
-        count=count,
-    )
+    normalized_urn = _normalize_urn(company_urn)
 
-    if not leads:
+    # Convert seniority names to numeric IDs
+    seniority_ids = None
+    if seniority_levels:
+        seniority_ids = [SENIORITY_MAP.get(s.upper(), s) for s in seniority_levels]
+
+    # Try Sales Nav search first
+    if normalized_urn:
+        leads = await _sales_nav_lead_search(
+            client, normalized_urn, company_name, cookies, headers,
+            seniority_ids=seniority_ids,
+            title_keywords=title_keywords,
+            function_ids=function_ids,
+            count=count,
+        )
+        if leads:
+            return leads
+
+        # Retry without seniority filter if no results
+        if seniority_ids:
+            logger.info(f"No leads with seniority filter, retrying without for {company_name}")
+            leads = await _sales_nav_lead_search(
+                client, normalized_urn, company_name, cookies, headers,
+                seniority_ids=None,
+                title_keywords=title_keywords,
+                function_ids=function_ids,
+                count=count,
+            )
+            if leads:
+                return leads
+
+    # Fallback to Voyager people search
+    company_id = normalized_urn.split(":")[-1] if normalized_urn else ""
+    if company_id:
         leads = await _voyager_people_search(
             client, company_id, cookies, headers,
             title_keywords=title_keywords,
             count=count,
         )
+        if leads:
+            return leads
 
-    return leads
+    return []
 
 
 async def _sales_nav_lead_search(
     client: httpx.AsyncClient,
-    company_id: str,
+    company_urn: str,
+    company_name: str,
     cookies: dict,
     headers: dict,
-    seniority_levels: Optional[list[str]] = None,
+    seniority_ids: Optional[list[str]] = None,
     title_keywords: Optional[str] = None,
     function_ids: Optional[list[str]] = None,
     count: int = 25,
 ) -> list[dict]:
-    """Search for leads using Sales Navigator API."""
+    """Search for leads using Sales Navigator API matching the working bot's format."""
 
-    # Build the Sales Nav search query
-    query_parts = []
+    # Encode URN: urn:li:organization:123 -> urn%3Ali%3Aorganization%3A123
+    encoded_urn = company_urn.replace(":", "%3A")
 
-    # Company filter
-    query_parts.append(f"(type:COMPANY_ID,values:List({company_id}))")
+    # Build filters in exact format the working bot uses
+    filter_parts = []
+
+    # Company filter: (type:CURRENT_COMPANY,values:List((id:urn%3Ali%3Aorganization%3A123,text:CompanyName,selectionType:INCLUDED)))
+    safe_name = company_name.replace(",", " ").replace("(", "").replace(")", "")
+    filter_parts.append(
+        f"(type:CURRENT_COMPANY,values:List((id:{encoded_urn},text:{safe_name},selectionType:INCLUDED)))"
+    )
 
     # Seniority filter
-    if seniority_levels:
-        seniority_str = ",".join(seniority_levels)
-        query_parts.append(f"(type:SENIORITY_LEVEL,values:List({seniority_str}))")
+    if seniority_ids:
+        seniority_values = ",".join(
+            f"(id:{sid},text:{sid},selectionType:INCLUDED)" for sid in seniority_ids
+        )
+        filter_parts.append(f"(type:SENIORITY_LEVEL,values:List({seniority_values}))")
 
     # Function filter
     if function_ids:
-        func_str = ",".join(function_ids)
-        query_parts.append(f"(type:FUNCTION,values:List({func_str}))")
+        func_values = ",".join(
+            f"(id:{fid},text:{fid},selectionType:INCLUDED)" for fid in function_ids
+        )
+        filter_parts.append(f"(type:FUNCTION,values:List({func_values}))")
 
-    filters = "List(" + ",".join(query_parts) + ")"
+    filters_str = "List(" + ",".join(filter_parts) + ")"
+
+    # Build query
+    if title_keywords:
+        query_str = f"(keywords:{urllib.parse.quote(title_keywords)},filters:{filters_str})"
+    else:
+        query_str = f"(filters:{filters_str})"
 
     params = {
-        "q": "peopleSearchQuery",
-        "query": f"(filters:{filters})",
+        "q": "searchQuery",
+        "query": query_str,
         "start": "0",
         "count": str(count),
         "decorationId": "com.linkedin.sales.deco.desktop.searchv2.LeadSearchResult-14",
     }
 
-    if title_keywords:
-        params["query"] = f"(keywords:{urllib.parse.quote(title_keywords)},filters:{filters})"
-
     url = f"{SALES_NAV_BASE}/salesApiLeadSearch"
+    logger.info(f"Sales Nav search: {company_name} (URN: {company_urn})")
+
     resp = await client.get(url, params=params, cookies=cookies, headers=headers)
 
-    if resp.status_code != 200:
-        logger.warning(f"Sales Nav search returned {resp.status_code}")
-        # Try alternative Sales Nav endpoint
-        return await _sales_nav_search_v2(
-            client, company_id, cookies, headers,
-            seniority_levels, title_keywords, function_ids, count
-        )
-
-    data = resp.json()
-    leads = []
-
-    elements = data.get("elements", [])
-    for elem in elements:
-        lead = _parse_sales_nav_lead(elem)
-        if lead:
-            leads.append(lead)
-
-    return leads
-
-
-async def _sales_nav_search_v2(
-    client: httpx.AsyncClient,
-    company_id: str,
-    cookies: dict,
-    headers: dict,
-    seniority_levels: Optional[list[str]] = None,
-    title_keywords: Optional[str] = None,
-    function_ids: Optional[list[str]] = None,
-    count: int = 25,
-) -> list[dict]:
-    """Alternative Sales Nav endpoint."""
-
-    # Build pivot-based query for newer Sales Nav API
-    query_filters = [
-        {"type": "COMPANY_ID", "values": [{"id": company_id}]}
-    ]
-
-    if seniority_levels:
-        query_filters.append({
-            "type": "SENIORITY_LEVEL",
-            "values": [{"id": s} for s in seniority_levels]
-        })
-
-    if function_ids:
-        query_filters.append({
-            "type": "FUNCTION",
-            "values": [{"id": f} for f in function_ids]
-        })
-
-    search_params = {
-        "filters": "List(" + ",".join(
-            f"(type:{f['type']},values:List({','.join(v['id'] for v in f['values'])}))"
-            for f in query_filters
-        ) + ")",
-        "start": 0,
-        "count": count,
-        "q": "peopleSearchQuery",
-    }
-
-    if title_keywords:
-        search_params["keywords"] = title_keywords
-
-    url = f"{SALES_NAV_BASE}/salesApiPeopleSearch"
-    resp = await client.get(url, params=search_params, cookies=cookies, headers=headers)
+    if resp.status_code == 429:
+        logger.warning("Sales Nav rate limited (429)")
+        await asyncio.sleep(30)
+        resp = await client.get(url, params=params, cookies=cookies, headers=headers)
 
     if resp.status_code != 200:
-        logger.warning(f"Sales Nav v2 search returned {resp.status_code}")
+        logger.warning(f"Sales Nav search returned {resp.status_code} for {company_name}")
         return []
 
     data = resp.json()
+    return _parse_sales_nav_response(data)
+
+
+def _parse_sales_nav_response(data: dict) -> list[dict]:
+    """Parse Sales Nav response - extract leads from included array."""
     leads = []
+    seen_names = set()
 
-    for elem in data.get("elements", []):
-        lead = _parse_sales_nav_lead(elem)
-        if lead:
-            leads.append(lead)
+    included = data.get("included", [])
 
-    # Also check included for nested entities
-    for item in data.get("included", []):
-        if "fsd_profile" in item.get("entityUrn", ""):
-            lead = _parse_included_profile(item)
-            if lead and lead not in leads:
+    # Build a map of URN -> profile data from included
+    for item in included:
+        item_type = item.get("$type", "")
+        entity_urn = item.get("entityUrn", "")
+
+        # Match DecoratedPeopleSearchHit or similar profile objects
+        is_search_hit = "SearchHit" in item_type or "LeadSearchResult" in item_type
+        is_profile = "fsd_profile" in entity_urn or "MiniProfile" in item_type
+
+        if not (is_search_hit or is_profile):
+            continue
+
+        # Extract name
+        full_name = item.get("fullName", "")
+        if not full_name:
+            first = item.get("firstName", "")
+            last = item.get("lastName", "")
+            full_name = f"{first} {last}".strip()
+
+        if not full_name or full_name in seen_names:
+            continue
+
+        # Extract title from currentPositions or headline
+        title = ""
+        current_positions = item.get("currentPositions", [])
+        if current_positions:
+            title = current_positions[0].get("title", "")
+        if not title:
+            title = item.get("title", "") or item.get("headline", "") or item.get("summary", "")
+
+        # Extract profile URL - try multiple fields
+        profile_url = item.get("publicProfileUrl", "")
+        if not profile_url:
+            vanity = item.get("vanityName", "") or item.get("publicIdentifier", "")
+            if vanity:
+                profile_url = f"https://www.linkedin.com/in/{vanity}/"
+
+        if full_name:
+            seen_names.add(full_name)
+            leads.append({
+                "name": full_name,
+                "designation": title,
+                "profileUrl": profile_url,
+            })
+
+    # Also try top-level elements if included was empty
+    if not leads:
+        for elem in data.get("elements", []):
+            lead = _parse_element_lead(elem)
+            if lead and lead["name"] not in seen_names:
+                seen_names.add(lead["name"])
                 leads.append(lead)
 
     return leads
 
 
-def _parse_sales_nav_lead(elem: dict) -> Optional[dict]:
-    """Parse a Sales Nav lead search result element."""
-    current_positions = elem.get("currentPositions", [])
-    title = ""
-    if current_positions:
-        title = current_positions[0].get("title", "")
-
-    first_name = elem.get("firstName", "")
-    last_name = elem.get("lastName", "")
-    full_name = f"{first_name} {last_name}".strip()
-
+def _parse_element_lead(elem: dict) -> Optional[dict]:
+    """Parse a lead from a top-level element."""
+    full_name = elem.get("fullName", "")
     if not full_name:
-        full_name = elem.get("fullName", "")
+        first = elem.get("firstName", "")
+        last = elem.get("lastName", "")
+        full_name = f"{first} {last}".strip()
 
     if not full_name:
         return None
 
-    # Get profile URL
-    profile_id = elem.get("publicIdentifier", "") or elem.get("profileId", "")
-    entity_urn = elem.get("entityUrn", "")
+    title = ""
+    current_positions = elem.get("currentPositions", [])
+    if current_positions:
+        title = current_positions[0].get("title", "")
+    if not title:
+        title = elem.get("title", "") or elem.get("headline", "")
 
-    profile_url = ""
-    if profile_id:
-        profile_url = f"https://www.linkedin.com/in/{profile_id}/"
-    elif entity_urn:
-        # Extract from URN
-        parts = entity_urn.split(":")
-        if parts:
-            profile_url = f"https://www.linkedin.com/in/{parts[-1]}/"
+    profile_url = elem.get("publicProfileUrl", "")
+    if not profile_url:
+        pid = elem.get("publicIdentifier", "") or elem.get("vanityName", "")
+        if pid:
+            profile_url = f"https://www.linkedin.com/in/{pid}/"
 
     return {
         "name": full_name,
-        "designation": title or elem.get("title", ""),
-        "profileUrl": profile_url,
-    }
-
-
-def _parse_included_profile(item: dict) -> Optional[dict]:
-    """Parse a profile from the included array."""
-    first = item.get("firstName", "")
-    last = item.get("lastName", "")
-    name = f"{first} {last}".strip() or item.get("fullName", "")
-
-    if not name:
-        return None
-
-    title = item.get("title", "") or item.get("headline", "")
-    public_id = item.get("publicIdentifier", "")
-    profile_url = f"https://www.linkedin.com/in/{public_id}/" if public_id else ""
-
-    return {
-        "name": name,
         "designation": title,
         "profileUrl": profile_url,
     }
@@ -624,6 +649,7 @@ async def _voyager_people_search(
     data = resp.json()
     included = data.get("included", [])
     leads = []
+    seen_names = set()
 
     for item in included:
         item_type = item.get("$type", "")
@@ -638,7 +664,8 @@ async def _voyager_people_search(
             public_id = item.get("publicIdentifier", "")
             profile_url = f"https://www.linkedin.com/in/{public_id}/" if public_id else ""
 
-            if name:
+            if name and name not in seen_names:
+                seen_names.add(name)
                 leads.append({
                     "name": name,
                     "designation": occupation,
@@ -646,14 +673,15 @@ async def _voyager_people_search(
                 })
 
         # Also check search result entities with title/subtitle
-        if "fsd_profile" in entity_urn or "fsd_entityResultViewModel" in entity_urn:
+        if "fsd_entityResultViewModel" in entity_urn:
             title_obj = item.get("title", {})
             name = title_obj.get("text", "") if isinstance(title_obj, dict) else str(title_obj or "")
             subtitle = item.get("primarySubtitle", {})
             designation = subtitle.get("text", "") if isinstance(subtitle, dict) else str(subtitle or "")
             nav_url = item.get("navigationUrl", "")
 
-            if name and name not in [l["name"] for l in leads]:
+            if name and name not in seen_names:
+                seen_names.add(name)
                 profile_url = ""
                 if nav_url and "linkedin.com/in/" in nav_url:
                     profile_url = nav_url.split("?")[0]

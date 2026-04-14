@@ -197,6 +197,7 @@ async def _run_enrichment(
                 leads = await linkedin_client.search_leads_sales_nav(
                     client=client,
                     company_urn=company_urn,
+                    company_name=company_name,
                     li_at=li_at,
                     li_a=li_a,
                     seniority_levels=seniority_levels,
