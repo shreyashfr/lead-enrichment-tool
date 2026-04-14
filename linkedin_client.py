@@ -4,6 +4,7 @@ Requires li_at cookie for authentication.
 """
 
 import httpx
+import re
 import urllib.parse
 import asyncio
 import logging
@@ -22,6 +23,12 @@ COMMON_HEADERS = {
     "x-restli-protocol-version": "2.0.0",
 }
 
+BROWSER_HEADERS = {
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "accept-language": "en-US,en;q=0.9,nl;q=0.8",
+}
+
 
 def _build_cookies(li_at: str, li_a: Optional[str] = None) -> dict:
     cookies = {"li_at": li_at, "JSESSIONID": '"ajax:0"'}
@@ -34,24 +41,151 @@ def _build_headers(csrf_token: str = "ajax:0") -> dict:
     return {**COMMON_HEADERS, "csrf-token": csrf_token}
 
 
+def _clean_domain(website: str) -> str:
+    """Extract clean domain from a URL."""
+    domain = website.strip().lower()
+    for prefix in ["https://", "http://", "www."]:
+        if domain.startswith(prefix):
+            domain = domain[len(prefix):]
+    domain = domain.split("/")[0].split("?")[0].split("#")[0]
+    return domain
+
+
+def _domain_to_brand(domain: str) -> str:
+    """Extract a human-readable brand name from a domain.
+    e.g. 'sanitairdesigncenter.nl' -> 'sanitair design center'
+         'rjs-badkamers.nl' -> 'rjs badkamers'
+         'vdbergbadkamers.nl' -> 'vdberg badkamers'
+    """
+    name = domain.split(".")[0]  # strip TLD
+    # Split on hyphens
+    name = name.replace("-", " ")
+    # Insert spaces before camelCase transitions and before common Dutch/English suffixes
+    name = re.sub(r'([a-z])([A-Z])', r'\1 \2', name)
+    return name.strip()
+
+
+async def _scrape_website_for_linkedin(client: httpx.AsyncClient, website: str) -> Optional[str]:
+    """Scrape the target website's HTML to find a LinkedIn company link."""
+    url = website.strip()
+    if not url.startswith("http"):
+        url = "https://" + url
+    # Strip path params to get base URL too
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+    urls_to_try = [url]
+    if url != base_url and url != base_url + "/":
+        urls_to_try.append(base_url)
+
+    for try_url in urls_to_try:
+        try:
+            resp = await client.get(try_url, headers=BROWSER_HEADERS, timeout=10, follow_redirects=True)
+            if resp.status_code != 200:
+                continue
+            html = resp.text
+            # Look for linkedin.com/company/ links
+            matches = re.findall(
+                r'https?://(?:www\.)?linkedin\.com/company/([a-zA-Z0-9_-]+)',
+                html
+            )
+            if matches:
+                slug = matches[0].rstrip("/")
+                return slug
+        except Exception as e:
+            logger.debug(f"Scrape failed for {try_url}: {e}")
+            continue
+    return None
+
+
+async def _resolve_slug_to_company(
+    client: httpx.AsyncClient, slug: str, cookies: dict, headers: dict
+) -> Optional[dict]:
+    """Given a LinkedIn company slug, resolve it to a company dict with URN."""
+    # First try the public page to get the URN
+    url = f"https://www.linkedin.com/company/{urllib.parse.quote(slug, safe='-_.~')}/"
+    try:
+        resp = await client.get(url, headers=BROWSER_HEADERS, timeout=12, follow_redirects=True)
+        if resp.status_code == 200:
+            html = resp.text
+            for pattern in [
+                r'"objectUrn":"(urn:li:organization:\d+)"',
+                r'"objectUrn":"(urn:li:company:\d+)"',
+                r'urn:li:fs_normalized_company:(\d+)',
+                r'"companyId":(\d+)',
+                r'"organizationId":(\d+)',
+            ]:
+                m = re.search(pattern, html)
+                if m:
+                    val = m.group(1)
+                    urn = val if val.startswith("urn:") else f"urn:li:company:{val}"
+                    # Try to extract name
+                    name_match = re.search(r'<title>([^<|]+)', html)
+                    name = name_match.group(1).strip().split(" | ")[0] if name_match else slug
+                    return {
+                        "companyName": name,
+                        "companyUrn": urn,
+                        "companyUrl": f"https://www.linkedin.com/company/{slug}/",
+                    }
+    except Exception as e:
+        logger.debug(f"Public page scrape failed for {slug}: {e}")
+
+    # Fallback: use Voyager to look up the slug directly
+    try:
+        voyager_url = f"{VOYAGER_BASE}/organization/companies?decorationId=com.linkedin.voyager.deco.organization.web.WebFullCompanyMain-12&q=universalName&universalName={slug}"
+        resp = await client.get(voyager_url, cookies=cookies, headers=headers, timeout=12)
+        if resp.status_code == 200:
+            data = resp.json()
+            elements = data.get("elements", [])
+            if elements:
+                elem = elements[0]
+                return {
+                    "companyName": elem.get("name", slug),
+                    "companyUrn": elem.get("entityUrn", ""),
+                    "companyUrl": f"https://www.linkedin.com/company/{slug}/",
+                }
+    except Exception as e:
+        logger.debug(f"Voyager slug lookup failed for {slug}: {e}")
+
+    # Still return something usable with the slug
+    return {
+        "companyName": slug.replace("-", " ").title(),
+        "companyUrn": "",
+        "companyUrl": f"https://www.linkedin.com/company/{slug}/",
+    }
+
+
 async def search_company_by_website(
     client: httpx.AsyncClient, website: str, li_at: str, li_a: Optional[str] = None
 ) -> Optional[dict]:
     """
     Search for a LinkedIn company page using the website domain.
     Returns dict with companyName, companyUrn, companyUrl, or None.
-    """
-    # Clean the website domain
-    domain = website.strip().lower()
-    for prefix in ["https://", "http://", "www."]:
-        if domain.startswith(prefix):
-            domain = domain[len(prefix):]
-    domain = domain.rstrip("/")
 
+    Strategy order:
+    1. Scrape the website HTML for a linkedin.com/company/ link (most reliable)
+    2. Voyager company search with the domain
+    3. Voyager company search with extracted brand name
+    4. Voyager typeahead with brand name
+    """
+    domain = _clean_domain(website)
+    brand = _domain_to_brand(domain)
     cookies = _build_cookies(li_at, li_a)
     headers = _build_headers()
 
-    # Strategy 1: Voyager company search with website keyword
+    # Strategy 1: Scrape website for LinkedIn company link
+    try:
+        slug = await _scrape_website_for_linkedin(client, website)
+        if slug:
+            logger.info(f"Found LinkedIn slug from website scrape: {slug}")
+            result = await _resolve_slug_to_company(client, slug, cookies, headers)
+            if result:
+                return result
+    except Exception as e:
+        logger.warning(f"Website scrape failed for {website}: {e}")
+
+    # Strategy 2: Voyager search with full domain
     try:
         result = await _voyager_company_search(client, domain, cookies, headers)
         if result:
@@ -59,13 +193,32 @@ async def search_company_by_website(
     except Exception as e:
         logger.warning(f"Voyager company search failed for {domain}: {e}")
 
-    # Strategy 2: Voyager typeahead search
+    # Strategy 3: Voyager search with brand name (if different from domain)
+    if brand != domain.split(".")[0]:
+        try:
+            result = await _voyager_company_search(client, brand, cookies, headers)
+            if result:
+                return result
+        except Exception as e:
+            logger.warning(f"Voyager brand search failed for {brand}: {e}")
+
+    # Strategy 4: Voyager typeahead with brand name
     try:
-        result = await _voyager_typeahead_search(client, domain, cookies, headers)
+        result = await _voyager_typeahead_search(client, brand, cookies, headers)
         if result:
             return result
     except Exception as e:
-        logger.warning(f"Voyager typeahead failed for {domain}: {e}")
+        logger.warning(f"Voyager typeahead failed for {brand}: {e}")
+
+    # Strategy 5: Voyager typeahead with just the first word of brand
+    first_word = brand.split()[0] if brand else ""
+    if first_word and len(first_word) > 3 and first_word != brand:
+        try:
+            result = await _voyager_typeahead_search(client, first_word, cookies, headers)
+            if result:
+                return result
+        except Exception as e:
+            logger.warning(f"Voyager typeahead (first word) failed for {first_word}: {e}")
 
     return None
 

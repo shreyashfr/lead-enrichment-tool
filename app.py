@@ -166,7 +166,7 @@ async def _run_enrichment(
     job = jobs[job_id]
     all_leads = []
 
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30, connect=10), follow_redirects=True) as client:
         for i, website in enumerate(websites):
             job["current"] = website
             job["processed"] = i
